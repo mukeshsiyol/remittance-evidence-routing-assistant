@@ -278,22 +278,25 @@ def run_custom_case(case: RemittanceCase, model: str, include_source_context: bo
     return result
 
 def run_mode(include_source_context: bool, mode_name: str, model: str, runs: int, sleep_s: float, log, rep: Reporter,
-             cases: List[RemittanceCase]):
+             cases: List[RemittanceCase], max_attempts_per_case: int = 3):
     golds = [gold_routing_label(c) for c in cases]
     all_runs, all_nature_runs, all_review_runs = [], [], []
     served_models = set()
     cit_strict, cit_ws, clause_ok, citation_text_ok, total = 0, 0, 0, 0, 0
     consecutive_errors = 0
+    mode_aborted = False
 
     for run_idx in range(1, runs + 1):
         preds = []
         nature_preds = []
         review_preds: List[Optional[bool]] = []
         for case in cases:
+            api_calls_before = api_usage_summary()["api_calls_used"]
             s1 = step1_pick_law_and_forms(case.credit_date, case.payment_date)
             s3 = step3_lookup_legal_sources(s1, case.payee_country)
             llm_out = steps2_and_4_extract_and_propose(
-                case, s3, model=model, include_source_context=include_source_context
+                case, s3, model=model, include_source_context=include_source_context,
+                max_attempts=max_attempts_per_case,
             )
             s5 = step5_review_and_routing(case, s1, llm_out, s3)
 
@@ -326,6 +329,7 @@ def run_mode(include_source_context: bool, mode_name: str, model: str, runs: int
                 "gold_independent_blind_review_recorded": case_has_independent_blind_review(case),
                 "case_evidence_inventory": case_evidence_inventory(case),
                 "final_label": preds[-1], "raw_llm_output": llm_out, "step5": s5,
+                "actual_api_requests_for_case": api_usage_summary()["api_calls_used"] - api_calls_before,
                 "citation_present_in_registry": ok, "citation_missing_from_registry": missing,
                 "citation_present_in_source_text": text_ok if not is_error else False,
                 "citation_missing_from_source_text": text_missing if not is_error else ["api_error"],
@@ -341,18 +345,31 @@ def run_mode(include_source_context: bool, mode_name: str, model: str, runs: int
                 print(f"      reason: {llm_out.get('reasoning', '')[:300]}")
 
             if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                sys.exit(f"ABORT: {consecutive_errors} API failures in a row. Last: {llm_out.get('reasoning')}")
+                rep.say(f"[{mode_name}] stopped after {consecutive_errors} consecutive API errors; preserving the partial run log.")
+                log.write(json.dumps({
+                    "mode_status": "aborted_after_consecutive_api_errors",
+                    "mode": mode_name,
+                    "run": run_idx,
+                    "case_id": case.case_id,
+                    "consecutive_errors": consecutive_errors,
+                    "last_error": llm_out.get("reasoning", ""),
+                }) + "\n")
+                log.flush()
+                mode_aborted = True
+                break
             time.sleep(sleep_s)
 
         all_runs.append(preds)
-        rep.say(f"[{mode_name}] final-route (gold_routing_label) run {run_idx}:", compute_metrics(preds, golds))
+        observed_cases = cases[:len(preds)]
+        observed_golds = golds[:len(preds)]
+        rep.say(f"[{mode_name}] final-route (gold_routing_label) run {run_idx}:", compute_metrics(preds, observed_golds))
         rep.say(
             f"[{mode_name}] payment-nature / review-flag run {run_idx}:",
-            compute_axis_metrics(nature_preds, review_preds, cases),
+            compute_axis_metrics(nature_preds, review_preds, observed_cases),
         )
         rep.say(f"[{mode_name}] per-case errors run {run_idx}:")
         error_count = 0
-        for case, route_pred, nature_pred, review_pred in zip(cases, preds, nature_preds, review_preds):
+        for case, route_pred, nature_pred, review_pred in zip(observed_cases, preds, nature_preds, review_preds):
             errors = case_error_labels(case, route_pred, nature_pred, review_pred)
             if errors:
                 error_count += 1
@@ -361,6 +378,9 @@ def run_mode(include_source_context: bool, mode_name: str, model: str, runs: int
             rep.say("   none")
         all_nature_runs.append(nature_preds)
         all_review_runs.append(review_preds)
+        if mode_aborted:
+            rep.say(f"[{mode_name}] partial sample size: {len(preds)}/{len(cases)} cases attempted in run {run_idx}; not a complete mode evaluation.")
+            return False
 
     consistent = sum(1 for i in range(len(cases)) if len({r[i] for r in all_runs}) == 1)
     rep.say(f"[{mode_name}] identical label across {runs} run(s): {consistent}/{len(cases)} cases")
@@ -379,6 +399,7 @@ def run_mode(include_source_context: bool, mode_name: str, model: str, runs: int
     rep.say(f"[{mode_name}] actual served model(s): {sorted(served_models) if served_models else 'none (all calls failed)'}")
     if len(served_models) > 1:
         rep.say(f"[{mode_name}] WARNING: served model varied during this mode: {sorted(served_models)}")
+    return True
 
 def main():
     ap = argparse.ArgumentParser(description="Run the fixed-case benchmark or one reviewer-entered synthetic case.")
@@ -431,7 +452,7 @@ def main():
                 import pypdf  # noqa: F401
             except ImportError:
                 ap.error(f"PDF treaty sources {sorted(pdf_sources)} require pypdf; no model API request was sent.")
-        budget = args.max_api_calls or 4  # one initial request plus up to three retries
+        budget = args.max_api_calls or 3  # up to three attempts for this one case
         configure_api_budget(budget)
         preflight_api_dns()
         get_api_key()
@@ -460,9 +481,12 @@ def main():
 
     modes_count = 2 if args.modes == "both" else 1
     planned_calls = len(cases) * args.runs * modes_count
-    api_call_budget = args.max_api_calls or planned_calls
+    api_call_budget = args.max_api_calls or planned_calls * 3
+    retry_budget_target = planned_calls * 3
     if api_call_budget < planned_calls and args.max_api_calls:
-        print(f"Request budget {api_call_budget} is below planned calls {planned_calls}; the run may stop early.")
+        print(f"Request budget {api_call_budget} is below planned cases {planned_calls}; some cases may not be attempted.")
+    elif api_call_budget < retry_budget_target and args.max_api_calls:
+        print(f"Request budget {api_call_budget} covers the planned cases but allows fewer than 3 attempts for some cases.")
     configure_api_budget(api_call_budget)
 
     unsupported_treaty_codes = sorted({
@@ -513,7 +537,7 @@ def main():
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     rep = Reporter(f"results_summary_{stamp}.txt")
     rep.say(f"Model requested: {args.model} | dataset: {args.dataset} | runs: {args.runs} | modes: {args.modes} | started: {stamp}")
-    rep.say(f"Hard API request budget: {api_call_budget} actual HTTP requests (retries count against this cap).")
+    rep.say(f"Hard API request budget: {api_call_budget} actual HTTP requests; up to 3 attempts per case, stopping after 3 consecutive case failures.")
     gold_status = (
         "independent blind-review record entered (qualification is self-attested, not verified by the script)"
         if all(case_has_independent_blind_review(case) for case in cases)
@@ -546,16 +570,21 @@ def main():
         log.write(json.dumps({"meta": {
             "model_requested": args.model, "dataset": args.dataset, "runs": args.runs,
             "started": stamp, "api_call_budget": api_call_budget,
+            "benchmark_max_attempts_per_case": 3,
             "gold_label_status": gold_status,
         }}) + "\n")
+        modes_complete = True
         if args.modes in ("both", "without-context"):
-            run_mode(False, "Without source context in prompt", args.model, args.runs, args.sleep, log, rep, cases)
-        if args.modes in ("both", "with-context"):
-            run_mode(True, "With source context in prompt", args.model, args.runs, args.sleep, log, rep, cases)
+            modes_complete = run_mode(False, "Without source context in prompt", args.model, args.runs,
+                                      args.sleep, log, rep, cases, max_attempts_per_case=3)
+        if modes_complete and args.modes in ("both", "with-context"):
+            modes_complete = run_mode(True, "With source context in prompt", args.model, args.runs,
+                                      args.sleep, log, rep, cases, max_attempts_per_case=3)
         usage = api_usage_summary()
-        log.write(json.dumps({"usage_summary": usage}) + "\n")
+        log.write(json.dumps({"usage_summary": usage, "run_complete": modes_complete}) + "\n")
         log.flush()
         rep.say("API/token usage:", usage)
+        rep.say("Evaluation complete:" if modes_complete else "Evaluation stopped early:", modes_complete)
 
     rep.say(f"Raw, unedited model outputs saved to {path} (each line includes 'served_model').")
     rep.say("Reminder: retrieved source text and citation presence checks are evidence only; neither confirms that a provision supports the claim or applies legally.")

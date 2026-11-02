@@ -83,7 +83,7 @@ def get_api_key() -> str:
     _API_KEY = key
     return key
 
-def _error_result(msg: str) -> dict:
+def _error_result(msg: str, raw_response: Optional[str] = None) -> dict:
     return {
         "proposed_label": NR,
         "payment_nature": "uncertain",
@@ -97,14 +97,15 @@ def _error_result(msg: str) -> dict:
         "cited_clauses": "",
         "reasoning": msg,
         "api_error": True,
+        "raw_response": raw_response,
     }
 
-def call_openrouter_llm(prompt: str, model: str, max_retries: int = 3) -> dict:
-    """Real API call at temperature 0. Failures return api_error=True (never a fake abstention)."""
+def call_openrouter_llm(prompt: str, model: str, max_attempts: int = 3) -> dict:
+    """Call the model at temperature 0; return parsed output and verbatim response text."""
     global _API_CALLS_USED
     api_key = get_api_key()
     last_error = "unknown"
-    for attempt in range(max_retries):
+    for attempt in range(max_attempts):
         if _API_CALLS_USED >= _API_CALL_LIMIT:
             return _error_result(f"api_error: request budget exhausted ({_API_CALL_LIMIT} actual requests)")
         try:
@@ -117,7 +118,8 @@ def call_openrouter_llm(prompt: str, model: str, max_retries: int = 3) -> dict:
             )
             if resp.status_code == 429 or resp.status_code >= 500:
                 last_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
-                time.sleep(5 * (2 ** attempt))
+                if attempt + 1 < max_attempts:
+                    time.sleep(5 * (2 ** attempt))
                 continue
             if resp.status_code >= 400:
                 # 400/401/402/403/404 will not fix themselves on retry (bad key, bad model name, no credits...)
@@ -132,13 +134,23 @@ def call_openrouter_llm(prompt: str, model: str, max_retries: int = 3) -> dict:
                     _TOKEN_USAGE_TOTALS[key] += value
             choices = body.get("choices")
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-                return _error_result("api_error: malformed API response is missing valid choices")
+                last_error = "malformed API response is missing valid choices"
+                if attempt + 1 < max_attempts:
+                    time.sleep(2 * (attempt + 1))
+                continue
             message = choices[0].get("message")
             if not isinstance(message, dict):
-                return _error_result("api_error: malformed API response is missing a valid message")
+                last_error = "malformed API response is missing a valid message"
+                if attempt + 1 < max_attempts:
+                    time.sleep(2 * (attempt + 1))
+                continue
             content = message.get("content")
             if not isinstance(content, str) or not content.strip():
-                return _error_result("api_error: empty model response (content is not a non-empty string)")
+                last_error = "empty model response (content is not a non-empty string)"
+                if attempt + 1 < max_attempts:
+                    time.sleep(2 * (attempt + 1))
+                continue
+            raw_response = content
             text = content.strip()
             served_model = body.get("model", "unknown")
         except (requests.RequestException, KeyError, IndexError, ValueError) as exc:
@@ -148,43 +160,45 @@ def call_openrouter_llm(prompt: str, model: str, max_retries: int = 3) -> dict:
 
         match = re.search(r"\{.*\}", text, flags=re.DOTALL)
         if not match:
-            return _error_result(f"parse_error: no JSON object in reply: {text[:200]!r}")
+            return _error_result(f"parse_error: no JSON object in reply: {text[:200]!r}", raw_response)
         try:
             out = json.loads(match.group(0))
             if not isinstance(out, dict):
-                return _error_result("parse_error: model response must be a JSON object")
+                return _error_result("parse_error: model response must be a JSON object", raw_response)
             if not isinstance(out.get("proposed_label"), str) or out["proposed_label"] not in CLOSED_LABELS:
-                return _error_result("parse_error: missing or invalid proposed_label")
+                return _error_result("parse_error: missing or invalid proposed_label", raw_response)
             if out.get("payment_nature") not in PAYMENT_NATURES:
-                return _error_result("parse_error: missing or invalid payment_nature")
+                return _error_result("parse_error: missing or invalid payment_nature", raw_response)
             if not isinstance(out.get("review_required"), bool):
-                return _error_result("parse_error: review_required must be a boolean")
+                return _error_result("parse_error: review_required must be a boolean", raw_response)
             if not isinstance(out.get("review_reasons"), list) or not all(isinstance(item, str) for item in out["review_reasons"]):
-                return _error_result("parse_error: review_reasons must be a list of strings")
+                return _error_result("parse_error: review_reasons must be a list of strings", raw_response)
             if out["payment_nature"] == "uncertain" and not out["review_required"]:
-                return _error_result("parse_error: uncertain payment_nature requires review_required=true")
+                return _error_result("parse_error: uncertain payment_nature requires review_required=true", raw_response)
             if out["review_required"] and not any(reason.strip() for reason in out["review_reasons"]):
-                return _error_result("parse_error: review_required=true requires at least one review reason")
+                return _error_result("parse_error: review_required=true requires at least one review reason", raw_response)
             expected_label = NR if out["review_required"] or out["payment_nature"] == "uncertain" else out["payment_nature"]
             if out["proposed_label"] != expected_label:
-                return _error_result("parse_error: proposed_label conflicts with payment_nature/review_required")
+                return _error_result("parse_error: proposed_label conflicts with payment_nature/review_required", raw_response)
             for field in ("is_pure_verified_reimbursement", "has_indian_business_nexus_or_unknown_stay"):
                 if field in out and not isinstance(out[field], bool):
-                    return _error_result(f"parse_error: {field} must be a boolean")
+                    return _error_result(f"parse_error: {field} must be a boolean", raw_response)
         except json.JSONDecodeError as exc:
-            return _error_result(f"parse_error: {exc}: {text[:200]!r}")
+            return _error_result(f"parse_error: {exc}: {text[:200]!r}", raw_response)
         out["api_error"] = False
         out["served_model"] = served_model
+        out["raw_response"] = raw_response
         out["api_usage"] = {
             key: usage.get(key) for key in ("prompt_tokens", "completion_tokens", "total_tokens")
             if isinstance(usage.get(key), int)
         }
         return out
 
-    return _error_result(f"api_error after {max_retries} attempts: {last_error}")
+    return _error_result(f"api_error after {max_attempts} attempts: {last_error}")
 
 def steps2_and_4_extract_and_propose(case: RemittanceCase, retrieved: Dict, model: str,
-                                     include_source_context: bool = True) -> Dict:
+                                     include_source_context: bool = True,
+                                     max_attempts: int = 3) -> Dict:
     """LLM: extract facts with verbatim quotes, propose a label from the closed set or abstain. Never a rate."""
     retrieval_block = (
         "OFFICIAL LEGAL SOURCE EXCERPTS (retrieved from allowlisted government pages; each has version, retrieval time, and SHA-256):\n"
@@ -238,7 +252,7 @@ Return ONLY valid JSON matching this exact schema:
   "reasoning": "brief explanation for the CA"
 }}"""
     prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    out = call_openrouter_llm(prompt, model=model)
+    out = call_openrouter_llm(prompt, model=model, max_attempts=max_attempts)
     out["prompt_sha256"] = prompt_sha256
     out["prompt_chars"] = len(prompt)
     return out

@@ -67,7 +67,3 @@ The script can also read `OPENROUTER_API_KEY` from a local `.env` file. Copy `.e
 - Treaty and statutory interpretation can depend on facts outside the invoice and contract.
 - A source can be official and still be outdated for a particular payment date or legal question; source retrieval does not itself establish legal applicability.
 - Before any tax position is taken, a CA must verify the source, facts, treaty requirements, chargeability, withholding, and procedural forms.
-
-## Before sharing publicly
-
-Confirm `.env`, API keys, local settings, generated logs, and legal-cache files are excluded or intentionally reviewed. Do not publish credentials or real client data. If this prototype is shared for the take-home assignment, provide a publicly accessible repository link and identify the model and test run used.

@@ -1,0 +1,46 @@
+Model requested: deepseek/deepseek-v4.1-flash-1017 | dataset: development | runs: 1 | modes: both | started: 20261103_040135
+Hard API request budget: 84 actual HTTP requests; up to 3 attempts per case, stopping after 3 consecutive case failures.
+Gold-label status: EXPLORATORY ONLY: author-assigned labels, not independently adjudicated blind
+CITATION METRICS ARE PRESENCE CHECKS ONLY: registry/source-text presence does not verify the correct source, subsection, claim support, or legal applicability. Do not report them as legal citation accuracy.
+HISTORICAL LEGACY-LABEL BASELINES (separate target; do not compare with the scorecards below):
+Keyword rule vs legacy gold: {'n': 14, 'accuracy_pct': 57.1, 'confident_wrong': '6/14', '  missed_an_abstain_case': 6, '  wrong_label_on_answerable': 0, 'unnecessary_abstentions': 0, 'correct_abstentions': 1, 'api_errors': 0}
+Abstain-all vs legacy gold: {'n': 14, 'accuracy_pct': 50.0, 'confident_wrong': '0/14', '  missed_an_abstain_case': 0, '  wrong_label_on_answerable': 0, 'unnecessary_abstentions': 7, 'correct_abstentions': 7, 'api_errors': 0}
+COMPARABLE SCORECARDS (all methods below use the same route, nature, and review gold targets):
+[Baseline keyword rule] final-route score (gold_routing_label): {'n': 14, 'accuracy_pct': 35.7, 'confident_wrong': '9/14', '  missed_an_abstain_case': 9, '  wrong_label_on_answerable': 0, 'unnecessary_abstentions': 0, 'correct_abstentions': 1, 'api_errors': 0}
+[Baseline keyword rule] payment-nature / review-flag scores: {'n': 14, 'payment_nature_accuracy_pct': 71.4, 'review_decision_accuracy_pct': 35.7, 'missed_review_flags': 9, 'unnecessary_review_flags': 0}
+[Baseline abstain on all] final-route score (gold_routing_label): {'n': 14, 'accuracy_pct': 71.4, 'confident_wrong': '0/14', '  missed_an_abstain_case': 0, '  wrong_label_on_answerable': 0, 'unnecessary_abstentions': 4, 'correct_abstentions': 10, 'api_errors': 0}
+[Baseline abstain on all] payment-nature / review-flag scores: {'n': 14, 'payment_nature_accuracy_pct': 35.7, 'review_decision_accuracy_pct': 71.4, 'missed_review_flags': 0, 'unnecessary_review_flags': 4}
+Single-label baseline convention: needs review maps to uncertain payment nature + review required; a predicted category maps to review not required.
+[Without source context in prompt] final-route (gold_routing_label) run 1: {'n': 14, 'accuracy_pct': 71.4, 'confident_wrong': '0/14', '  missed_an_abstain_case': 0, '  wrong_label_on_answerable': 0, 'unnecessary_abstentions': 4, 'correct_abstentions': 10, 'api_errors': 0}
+[Without source context in prompt] payment-nature / review-flag run 1: {'n': 14, 'payment_nature_accuracy_pct': 85.7, 'review_decision_accuracy_pct': 71.4, 'missed_review_flags': 0, 'unnecessary_review_flags': 4}
+[Without source context in prompt] per-case errors run 1:
+   case 1: route expected 'royalty', got 'needs review'; review flag expected False, got True
+   case 2: route expected 'royalty', got 'needs review'; review flag expected False, got True
+   case 6: nature expected 'uncertain', got 'reimbursement'
+   case 7: nature expected 'uncertain', got 'fees for technical services'
+   case 10: route expected 'fees for technical services', got 'needs review'; review flag expected False, got True
+   case 12: route expected 'royalty', got 'needs review'; review flag expected False, got True
+[Without source context in prompt] identical label across 1 run(s): 14/14 cases
+[Without source context in prompt] identical payment nature / review decision across 1 run(s): 14/14 / 14/14 cases
+[Without source context in prompt] verbatim quotes strict: 14/14; after whitespace normalising (report only): 14/14; citation present in registry (not support verification): 0/14; citation present in source text (not support verification): 1/14
+[Without source context in prompt] sample size: 14 cases per run
+[Without source context in prompt] actual served model(s): ['deepseek/deepseek-v4.1-flash-1017']
+[With source context in prompt] final-route (gold_routing_label) run 1: {'n': 14, 'accuracy_pct': 71.4, 'confident_wrong': '0/14', '  missed_an_abstain_case': 0, '  wrong_label_on_answerable': 0, 'unnecessary_abstentions': 4, 'correct_abstentions': 10, 'api_errors': 0}
+[With source context in prompt] payment-nature / review-flag run 1: {'n': 14, 'payment_nature_accuracy_pct': 85.7, 'review_decision_accuracy_pct': 71.4, 'missed_review_flags': 0, 'unnecessary_review_flags': 4}
+[With source context in prompt] per-case errors run 1:
+   case 1: route expected 'royalty', got 'needs review'; review flag expected False, got True
+   case 2: route expected 'royalty', got 'needs review'; review flag expected False, got True
+   case 3: nature expected 'uncertain', got 'royalty'
+   case 7: nature expected 'uncertain', got 'fees for technical services'
+   case 10: route expected 'fees for technical services', got 'needs review'; review flag expected False, got True
+   case 12: route expected 'royalty', got 'needs review'; review flag expected False, got True
+[With source context in prompt] identical label across 1 run(s): 14/14 cases
+[With source context in prompt] identical payment nature / review decision across 1 run(s): 14/14 / 14/14 cases
+[With source context in prompt] verbatim quotes strict: 14/14; after whitespace normalising (report only): 14/14; citation present in registry (not support verification): 12/14; citation present in source text (not support verification): 12/14
+[With source context in prompt] sample size: 14 cases per run
+[With source context in prompt] actual served model(s): ['deepseek/deepseek-v4.1-flash-1017']
+API/token usage: {'api_calls_used': 29, 'api_call_budget': 84, 'api_calls_remaining': 55, 'token_usage_reported_by_provider': {'prompt_tokens': 147133, 'completion_tokens': 104749, 'total_tokens': 251882}}
+Evaluation complete: True
+Raw, unedited model outputs saved to raw_llm_runs_20261103_040135.jsonl (each line includes 'served_model').
+Reminder: retrieved source text and citation presence checks are evidence only; neither confirms that a provision supports the claim or applies legally.
+Do not present these scores as validated performance until a qualified reviewer independently adjudicates the gold labels blind to model outputs.

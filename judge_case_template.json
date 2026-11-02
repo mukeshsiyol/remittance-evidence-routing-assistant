@@ -1,0 +1,33 @@
+{
+  "name": "Synthetic services payment example",
+  "credit_date": "2026-05-10",
+  "payment_date": "2026-05-15",
+  "payee_country": "US",
+  "payee_type": "COMPANY",
+  "amount_inr": 250000,
+  "same_tax_year_payee_taxable_agg_inr": 0,
+  "invoice_text": "[SYNTHETIC INVOICE] Consulting support for the May 2026 product rollout.",
+  "contract_text": "[SYNTHETIC CONTRACT] Provider supplies remote business consulting. No intellectual-property rights are granted.",
+  "evidence": {
+    "tax_residency_certificate": {
+      "status": "unknown",
+      "source": "Not specified in this synthetic example",
+      "source_detail": "No document was provided for review."
+    },
+    "portal_treaty_form": {
+      "status": "unknown",
+      "source": "Not specified in this synthetic example",
+      "source_detail": "No document was provided for review."
+    },
+    "no_pe_declaration": {
+      "status": "unknown",
+      "source": "Not specified in this synthetic example",
+      "source_detail": "No document was provided for review."
+    },
+    "section_395_certificate": {
+      "status": "unknown",
+      "source": "Not specified in this synthetic example",
+      "source_detail": "No document was provided for review."
+    }
+  }
+}

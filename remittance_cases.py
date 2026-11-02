@@ -31,6 +31,7 @@ class RemittanceCase:
     gold_payment_nature: Optional[str] = None
     gold_review_required: Optional[bool] = None
     gold_adjudication_record: Optional[Dict] = None
+    input_evidence_inventory: Optional[Dict[str, Dict[str, str]]] = None
 
     def __post_init__(self):
         if self.gold_label in CLOSED_LABELS and self.gold_payment_nature is None:
@@ -78,6 +79,8 @@ def evidence_status(value: Optional[bool]) -> str:
 
 def case_evidence_inventory(case: RemittanceCase) -> Dict[str, Dict[str, str]]:
     """Expose each document assertion and its fixture-level provenance to reviewers and the model."""
+    if case.input_evidence_inventory is not None:
+        return case.input_evidence_inventory
     fields = {
         "tax_residency_certificate": ("has_trc", case.has_trc),
         "portal_treaty_form": ("has_portal_treaty_form", case.has_portal_treaty_form),

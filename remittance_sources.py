@@ -439,7 +439,10 @@ def check_citation_roots_in_source_text(cited: str, retrieved: dict):
     for kind, number in references:
         root_kind = _kind(kind)
         label = "art(?:icle)?" if root_kind == "article" else ("sec(?:tion)?" if root_kind == "section" else "rule")
-        pattern = rf"\b{label}\s*\.?\s*{re.escape(number.casefold())}\b"
+        # Official Income-tax pages often render headings as "Rule - 220".
+        # Permit a dash between a citation label and its number while keeping
+        # this metric limited to root-label presence, not citation validation.
+        pattern = rf"\b{label}\s*(?:[-–—]\s*)?\.?\s*{re.escape(number.casefold())}\b"
         if not re.search(pattern, combined_text, flags=re.I):
             missing.append(f"{root_kind} {number}")
     return (len(missing) == 0), missing

@@ -2,14 +2,16 @@
 pipeline_eval.py - CLI entry point for the remittance evaluation prototype.
 Keep remittance_cases.py, remittance_sources.py, and remittance_pipeline.py beside this file.
 
-The CLI evaluates synthetic fixed cases. It does not determine tax treatment or rates.
+The CLI can evaluate synthetic fixed cases or run one user-entered synthetic case.
+It does not determine tax treatment or rates.
 """
 import argparse
 import json
+import math
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -111,6 +113,169 @@ class Reporter:
         print(line)
         self.f.write(line + "\n")
         self.f.flush()
+
+
+_CUSTOM_EVIDENCE_FIELDS = {
+    "tax_residency_certificate": "has_trc",
+    "portal_treaty_form": "has_portal_treaty_form",
+    "no_pe_declaration": "has_no_pe_declaration",
+    "section_395_certificate": "has_ao_sec395_certificate",
+}
+
+
+def load_custom_case(path: str) -> RemittanceCase:
+    """Load one judge-entered case. It has no gold labels and is never benchmark-scored."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Could not read case JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Case JSON must contain one object.")
+
+    required = {
+        "name", "credit_date", "payment_date", "payee_country", "payee_type",
+        "amount_inr", "same_tax_year_payee_taxable_agg_inr", "invoice_text",
+        "contract_text", "evidence",
+    }
+    missing = sorted(required - set(payload))
+    extra = sorted(set(payload) - required)
+    if missing or extra:
+        details = []
+        if missing:
+            details.append(f"missing fields: {missing}")
+        if extra:
+            details.append(f"unknown fields: {extra}")
+        raise ValueError("Invalid case JSON (" + "; ".join(details) + ").")
+
+    for field in ("credit_date", "payment_date"):
+        try:
+            date.fromisoformat(payload[field])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field} must be a date in YYYY-MM-DD format.") from exc
+
+    country = str(payload["payee_country"]).strip().upper()
+    payee_type = str(payload["payee_type"]).strip().upper()
+    if not country or country != "NONE" and len(country) != 2:
+        raise ValueError("payee_country must be a two-letter country code or NONE.")
+    if payee_type not in {"COMPANY", "INDIVIDUAL"}:
+        raise ValueError("payee_type must be COMPANY or INDIVIDUAL.")
+    if not isinstance(payload["name"], str) or not payload["name"].strip():
+        raise ValueError("name must be a non-empty string.")
+    for field in ("invoice_text", "contract_text"):
+        if not isinstance(payload[field], str) or not payload[field].strip():
+            raise ValueError(f"{field} must be a non-empty string.")
+
+    amounts = {}
+    for field in ("amount_inr", "same_tax_year_payee_taxable_agg_inr"):
+        value = payload[field]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            raise ValueError(f"{field} must be a finite non-negative number.")
+        amounts[field] = float(value)
+
+    raw_evidence = payload["evidence"]
+    if not isinstance(raw_evidence, dict) or set(raw_evidence) != set(_CUSTOM_EVIDENCE_FIELDS):
+        raise ValueError("evidence must include exactly the four document keys shown in judge_case_template.json.")
+    inventory = {}
+    evidence_values = {}
+    for document, field_name in _CUSTOM_EVIDENCE_FIELDS.items():
+        item = raw_evidence[document]
+        if not isinstance(item, dict):
+            raise ValueError(f"evidence.{document} must be an object with status and provenance.")
+        status = item.get("status")
+        source = item.get("source")
+        detail = item.get("source_detail", "")
+        if status not in {"supplied", "missing", "unknown"}:
+            raise ValueError(f"evidence.{document}.status must be supplied, missing, or unknown.")
+        if not isinstance(source, str) or not source.strip() or not isinstance(detail, str):
+            raise ValueError(f"evidence.{document} needs a non-empty source and optional text source_detail.")
+        inventory[document] = {
+            "status": status,
+            "source": source.strip(),
+            "source_detail": detail.strip(),
+        }
+        evidence_values[field_name] = {"supplied": True, "missing": False, "unknown": None}[status]
+
+    return RemittanceCase(
+        case_id=0,
+        name=payload["name"].strip(),
+        credit_date=payload["credit_date"],
+        payment_date=payload["payment_date"],
+        payee_country=country,
+        payee_type=payee_type,
+        amount_inr=amounts["amount_inr"],
+        same_tax_year_payee_taxable_agg_inr=amounts["same_tax_year_payee_taxable_agg_inr"],
+        invoice_text=payload["invoice_text"].strip(),
+        contract_text=payload["contract_text"].strip(),
+        gold_label=None,
+        input_evidence_inventory=inventory,
+        **evidence_values,
+    )
+
+
+def run_custom_case(case: RemittanceCase, model: str, include_source_context: bool,
+                    output_path: Optional[str] = None) -> Dict:
+    """Run one unscored user case and print the reviewer-facing result as JSON."""
+    s1 = step1_pick_law_and_forms(case.credit_date, case.payment_date)
+    legal_lookup = step3_lookup_legal_sources(s1, case.payee_country)
+    llm_out = steps2_and_4_extract_and_propose(
+        case, legal_lookup, model=model, include_source_context=include_source_context
+    )
+    result = {
+        "case_name": case.name,
+        "mode": "single case with source context in prompt" if include_source_context
+                else "single case without source context in prompt",
+        "benchmark_score": "not computed; no reviewed gold label supplied",
+        "transaction": {
+            "credit_date": case.credit_date,
+            "payment_date": case.payment_date,
+            "payee_country": case.payee_country,
+            "payee_type": case.payee_type,
+            "amount_inr": case.amount_inr,
+            "same_tax_year_payee_taxable_agg_inr": case.same_tax_year_payee_taxable_agg_inr,
+        },
+        "model_requested": model,
+        "served_model": llm_out.get("served_model"),
+        "api_error": llm_out.get("api_error"),
+        "payment_nature": None,
+        "review_required": None,
+        "final_route": None,
+        "review_reasons": [],
+        "evidence_inventory": case_evidence_inventory(case),
+        "api_usage": api_usage_summary(),
+        "notice": "Reviewer aid only. Verify original documents, legal sources, facts, and legal application before any tax action.",
+    }
+    if not llm_out.get("api_error"):
+        routed = step5_review_and_routing(case, s1, llm_out, legal_lookup)
+        registry_present, registry_missing = check_cited_references(llm_out.get("cited_clauses", ""), legal_lookup)
+        source_text_present, source_text_missing = check_citation_roots_in_source_text(
+            llm_out.get("cited_clauses", ""), legal_lookup
+        )
+        result.update({
+            "payment_nature": routed["payment_nature"],
+            "review_required": routed["review_required"],
+            "final_route": routed["final_label"],
+            "review_reasons": routed["review_reasons"],
+            "document_quotes_verified": routed["document_quotes_verified"],
+            "extracted_invoice_quote": llm_out.get("invoice_quote", ""),
+            "extracted_contract_quote": llm_out.get("contract_quote", ""),
+            "cited_provisions": llm_out.get("cited_clauses", ""),
+            "citation_present_in_registry": registry_present,
+            "citations_missing_from_registry": registry_missing,
+            "citation_present_in_source_text": source_text_present,
+            "citation_roots_missing_from_source_text": source_text_missing,
+            "legal_sources": routed["legal_sources"],
+            "procedural_rule_used": routed["procedural_rule_used"],
+            "form_route": routed["form_route"],
+            "gate_notes": routed["gate_notes"],
+        })
+    if output_path:
+        result["saved_result"] = output_path
+        with open(output_path, "x", encoding="utf-8") as handle:
+            json.dump(result, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
 
 def run_mode(include_source_context: bool, mode_name: str, model: str, runs: int, sleep_s: float, log, rep: Reporter,
              cases: List[RemittanceCase]):
@@ -216,11 +381,13 @@ def run_mode(include_source_context: bool, mode_name: str, model: str, runs: int
         rep.say(f"[{mode_name}] WARNING: served model varied during this mode: {sorted(served_models)}")
 
 def main():
-    ap = argparse.ArgumentParser(description="Remittance classification benchmark (live API only).")
+    ap = argparse.ArgumentParser(description="Run the fixed-case benchmark or one reviewer-entered synthetic case.")
     ap.add_argument("--model", required=True, help="exact OpenRouter model slug; auto is not allowed for benchmark runs")
     ap.add_argument("--runs", type=int, default=1, help="runs per mode (default 1)")
-    ap.add_argument("--modes", choices=["both", "with-context", "without-context"], default="both",
+    ap.add_argument("--modes", choices=["both", "with-context", "without-context"], default=None,
                     help="whether official source excerpts are included in the LLM prompt; both modes still retrieve sources for downstream checks")
+    ap.add_argument("--case-file", help="run one case from JSON instead of the fixed benchmark (see judge_case_template.json)")
+    ap.add_argument("--output", help="optionally save the single-case JSON result to this path; input text is not saved by default")
     ap.add_argument("--dataset", choices=["development", "holdout"], default="development",
                     help="holdout requires independent blind-review records and configured treaty sources")
     ap.add_argument("--max-api-calls", type=int, default=0,
@@ -236,6 +403,45 @@ def main():
         ap.error("--sleep cannot be negative")
     if args.max_api_calls < 0:
         ap.error("--max-api-calls cannot be negative")
+    if args.output and not args.case_file:
+        ap.error("--output is only available with --case-file")
+
+    if args.case_file:
+        if args.dataset != "development":
+            ap.error("--case-file cannot be combined with --dataset holdout")
+        if args.runs != 1:
+            ap.error("--case-file supports one run at a time")
+        if args.modes == "both":
+            ap.error("--case-file accepts one prompt mode per run; use --modes with-context or --modes without-context")
+        try:
+            case = load_custom_case(args.case_file)
+        except ValueError as exc:
+            ap.error(str(exc))
+        if case.payee_country not in TREATY_INDEX:
+            ap.error(
+                f"No treaty source is configured for payee country {case.payee_country!r}; "
+                "no model API request was sent."
+            )
+        pdf_sources = {
+            source_id for source_id in TREATY_INDEX[case.payee_country]["source_ids"]
+            if urlparse(SOURCE_REGISTRY[source_id]["url"]).path.casefold().endswith(".pdf")
+        }
+        if pdf_sources:
+            try:
+                import pypdf  # noqa: F401
+            except ImportError:
+                ap.error(f"PDF treaty sources {sorted(pdf_sources)} require pypdf; no model API request was sent.")
+        budget = args.max_api_calls or 4  # one initial request plus up to three retries
+        configure_api_budget(budget)
+        preflight_api_dns()
+        get_api_key()
+        run_custom_case(
+            case, args.model, include_source_context=(args.modes != "without-context"),
+            output_path=args.output,
+        )
+        return
+
+    args.modes = args.modes or "both"
 
     cases = TEST_CASES if args.dataset == "development" else HOLDOUT_CASES
     pending = [case.case_id for case in cases if not case_is_adjudicated(case)]

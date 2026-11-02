@@ -203,7 +203,7 @@ TRANSACTION METADATA:
 - Payee Type: {case.payee_type}
 - Credit Date: {case.credit_date} | Remittance Date: {case.payment_date}
 - Supporting document evidence inventory: {json.dumps(case_evidence_inventory(case))}
-- Status meanings: supplied and missing are synthetic fixture assertions, not verified document contents; unknown means the case facts do not state the status. The `source` and `source_detail` fields identify this provenance. The supporting document files themselves are not included in this model input. Do not treat unknown as missing.
+- Evidence status and provenance are supplied by the case input or synthetic fixture; they are not independently verified, and the supporting document files are not attached. Unknown means the status is not established. Do not treat unknown as missing.
 
 INVOICE TEXT:
 {case.invoice_text}

@@ -54,6 +54,17 @@ python pipeline_eval.py --model $MODEL_SLUG --modes with-context --runs 1 --max-
 
 Use `--modes without-context` to omit legal excerpts from the model prompt, `--modes with-context` to include them, or `--modes both` to compare both. **Both modes still retrieve official sources** for downstream source freshness, routing, and citation checks; the comparison isolates the effect of showing source excerpts to the model. The default is one run of both modes and caps OpenRouter requests at 28 (including retries). Set `--max-api-calls` to a larger number only when you want to budget for retries; the cap is never exceeded. `--dataset holdout` is blocked until all 8 cases have independent gold labels and blind-review records. Canada and Australia treaty sources are PDFs and require `pypdf`.
 
+### Try one new synthetic case
+
+The fixed benchmark is still available, and a judge can also submit one new case as JSON. Start by copying `judge_case_template.json`, then replace the synthetic invoice/contract text and transaction facts. Keep evidence statuses explicit as `supplied`, `missing`, or `unknown`, with a source and short detail for each. Unknown must not be changed to missing just because a document was not mentioned. The input is not independently verified; use synthetic data only, never real client documents or personal information.
+
+```powershell
+$MODEL_SLUG = "deepseek/deepseek-v4.1-flash-1017" # replace with an exact model slug if needed
+python pipeline_eval.py --model $MODEL_SLUG --case-file .\judge_case_template.json
+```
+
+Single-case mode defaults to source context in the prompt and allows up to 4 actual API requests to cover the initial call and retries. This mode does not calculate benchmark accuracy because a user-entered case has no adjudicated gold label. It prints the evidence inventory, proposed payment nature, review flag and reasons, final route, served model, and source-presence checks. It does not save the case text or result unless `--output .\case_result.json` is supplied. Legal-source support must already be configured for the payee country; otherwise the run stops before calling the model. Use `--modes without-context` to omit source excerpts from the prompt, or set `--max-api-calls` to choose another request cap.
+
 `--model` is required, and `auto` is rejected so runs use an explicitly selected model slug. For the holdout, the script checks treaty-source retrieval or a fresh cache before sending model requests; a missing or inaccessible source stops the run. The summary reports the actual served model IDs; if they vary, treat the run as non-comparable and investigate before making a performance claim. Each run prints sample size, payment-nature and review-flag metrics, and case-level mismatches against all three gold targets. Development results remain exploratory until qualified reviewers independently adjudicate the labels without seeing model outputs.
 
 The JSONL log records the requested model slug and each response's served model, actual request counts, and provider-reported token usage when the API returns it. Prompt hashes and character counts are logged with each model output so a prompt can be identified without duplicating its full text in the raw-output log.

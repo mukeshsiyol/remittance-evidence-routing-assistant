@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+legal_cache/
+raw_llm_runs_*.jsonl
+results_summary_*.txt
+settings.json
+Test api.py
